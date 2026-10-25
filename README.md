@@ -1,107 +1,98 @@
 # BikeFit AI
 
-> Computer-vision cycling position analysis, points a camera at a rider on a trainer, tracks their joints in real time, and turns that into physical, centimeter-accurate bike fit recommendations.
+> Video-based bike fitting: a rider films themselves pedalling on a trainer, and the system measures their position while they ride and turns it into clear, practical fit advice.
 
-**Live product:** [bike.coachonurai.com](https://bike.coachonurai.com) · [Google Play](https://play.google.com/store/apps/details?id=com.trihonor.bikefitai)
+**Live product:** [bikefit.coachonurai.com](https://bikefit.coachonurai.com) · [Google Play](https://play.google.com/store/apps/details?id=com.trihonor.bikefitai)
 
-**This is a documentation-only repository.** BikeFit AI is closed-source, production software with real users on web and Android, built and run by me end-to-end. The source isn't published here because it's a commercial product. This repo is an architecture write-up for recruiters and other engineers, no source code, credentials, or user data is included.
+**This is a documentation-only repository.** BikeFit AI is a commercial, closed-source product with paying users on the web and Android. I design, build and run it end to end. This repo is a high-level case study for recruiters and engineers. It contains no source code, no implementation details, no credentials and no user data.
 
 ---
 
 ## The problem
 
-A proper bike fit (saddle height, knee-over-pedal-spindle, reach) normally means booking a fitter, a static camera, and a couple of hours. Most riders never do it, ride slightly wrong for years, and either lose power or get hurt. The information needed to fix that (where your joints actually are relative to the bike, in real physical units) is entirely computable from a side-on video, the hard part is making that computation accurate, real-time, and cheap enough to run on a $70 board instead of a fitting studio's PC.
+A professional bike fit means booking a fitter, a studio and a couple of hours. Most riders never do it. They ride slightly out of position for years and lose power, or end up with knee or back pain.
+
+Most of what a fitter looks at (knee angle at the bottom and the top of the pedal stroke, hip angle, back angle, where the knee sits over the pedal) can be read from a side-on video. The hard part is doing it accurately enough to trust, cheaply enough to offer to everyone, and in a way a rider can check with their own eyes.
 
 ## What it does
 
-- **Tracks the rider's joints in real time** from ordinary camera input, shoulder, elbow, hip, knee, ankle, as they pedal.
-- **Converts pixels to physical centimeters.** The rider pins the front hub, rear hub, bottom bracket, and saddle once; combined with the bike's known wheelbase, that anchors the whole video in real-world units, so saddle height and knee-over-pedal-spindle come out in centimeters, not arbitrary pixel ratios.
-- **Corrects its own mistakes.** When the bike's frame occludes a joint and the pose model's guess is anatomically impossible (e.g. a shin/thigh ratio that doesn't exist), the system detects that and corrects the keypoint instead of propagating a bad reading into the fit recommendation.
-- **Understands two riding styles.** Ideal joint angles differ for a traditional road position versus an aero triathlon/TT position, recommendations are computed against the profile that's actually relevant.
-- **Overlays real sensor data.** Connects directly to smart trainers and power meters over Bluetooth and lays live watts/cadence/speed on top of the biomechanical read-out.
-- **Gets smarter from real usage.** When a user confirms or corrects a calibration point, that frame is captured and stored as labeled training data, production usage doubles as a data collection pipeline for improving the underlying model.
+- **Measures the rider while they pedal**, not in a frozen pose. Results come from many pedal strokes, not a single frame, so one bad frame cannot change the advice.
+- **Works in real units.** The rider marks a few reference points on their bike once; from then on saddle height and knee-over-pedal position are reported in centimetres.
+- **Gives advice the way a fitter would**: graded by how far a value is from the ideal range, specific to the bike type (road, triathlon/TT, MTB), and honest when a measurement is uncertain.
+- **Shows its work.** Every key measurement comes with the exact frame it was taken from and the lines it was measured on, so the rider can see that the result is real.
+- **Produces a report** the rider can keep or send to their own fitter, in 10 languages.
+- **Runs on the web and on Android** from one code base, with paid analysis credits on both platforms.
 
-## Architecture
+## How it works (high level)
 
 ```mermaid
-flowchart TD
-    CAM["Camera / video input"] --> POSE["Pose estimation engine"]
+flowchart LR
+    REC["Rider films a short<br/>side-on video"] --> UP["Upload"]
+    UP --> Q["Analysis job"]
 
-    subgraph ENGINES["Tri-engine design"]
-        POSE --> YOLO["YOLOv8-Pose on Hailo-8 NPU\n(production, Pi 5)"]
-        POSE --> MP["MediaPipe\n(dev / CPU fallback)"]
-        POSE --> PARTS["Bike-parts detector\n(auto-calibration)"]
+    subgraph EDGE["Own inference server (edge NPU)"]
+        Q --> SCAN["Fast pass:<br/>follow the rider through the clip"]
+        SCAN --> SEL["Pick the moments that matter<br/>in every pedal stroke"]
+        SEL --> PREC["Precise pass:<br/>re-measure only those moments"]
+        PREC --> AGG["Combine many strokes<br/>into one stable result"]
     end
 
-    YOLO --> HEAL["Self-healing keypoint correction\n(anatomical ratio checks)"]
-    MP --> HEAL
+    CAL["Rider's calibration points"] --> AGG
+    AGG --> ADV["Fit advice<br/>(road / tri-TT / MTB)"]
+    ADV --> OUT["Results with proof images<br/>+ PDF report"]
+```
 
-    PINS["User calibration pins\n(hubs, bottom bracket, saddle)"] --> CAL["Pixel-to-cm mapping"]
-    HEAL --> CAL
-    CAL --> ANGLES["Joint angle calculator"]
-    ANGLES --> FIT["Fit model\n(road vs. aero/TT profile)"]
-
-    BLE["Smart trainer / power meter\n(Web Bluetooth)"] --> OVERLAY["Live telemetry overlay"]
-
-    FIT --> REPORT["Fit report\n(saddle height, KOPS, reach)"]
-    OVERLAY --> REPORT
-
-    REPORT --> CONFIRM{"User confirms\ncalibration?"}
-    CONFIRM -->|"yes"| DATASET["Active learning dataset\n(future model training)"]
-
-    STRIPE["Stripe paywall\n(24h session pass)"] --> REPORT
-    REPORT --> ANDROID["Synced to native Android app\n(Capacitor)"]
+```mermaid
+flowchart LR
+    U["Rider"] --> WEB["Web app"]
+    U --> AND["Android app"]
+    WEB --> API["API"]
+    AND --> API
+    API --> PAY["Payments<br/>(card / Google Play)"]
+    API --> JOBS["Video analysis jobs"]
+    JOBS --> NPU["Edge AI hardware"]
+    API --> DB[("Accounts, credits,<br/>fit history")]
 ```
 
 ## Engineering decisions worth calling out
 
-**Edge inference, not cloud inference.** Production pose estimation runs on a Raspberry Pi 5 with a Hailo-8 NPU, not a cloud GPU. A cycling fit session is real-time and camera-heavy, streaming raw video to a cloud model for every frame would add latency and cost that a dedicated on-device accelerator avoids entirely.
+**Edge inference instead of a cloud GPU.** Video analysis runs on my own small server with a neural accelerator. Running costs stay flat as usage grows, and raw rider videos never leave infrastructure I control.
 
-**Three engines, not one.** Development uses CPU-only MediaPipe for fast iteration without needing the actual NPU hardware; production uses the heavier, more accurate YOLOv8-Pose model that only makes sense on the Hailo accelerator. Keeping these separate meant the dev loop never got blocked on production hardware.
+**Two passes: fast first, precise where it matters.** A fast model follows the rider through the whole clip. A slower, more precise model is spent only on the few moments that decide the fit. Accuracy goes where it counts, and analysis time stays at a couple of minutes.
 
-**Don't trust a keypoint just because the model returned one.** Bicycle geometry regularly occludes a knee or ankle from a side-on camera. Rather than accept whatever the pose model guesses, the system checks the result against known anatomical proportions (e.g. shin-to-thigh ratio) and corrects it when the guess is physically impossible, a cheap check that meaningfully improves fit accuracy in the exact frames that matter most.
+**Many strokes, not one frame.** A rider's position changes a little from one pedal stroke to the next, and any single frame can be blurred or blocked by the bike. The result is built from many strokes with outliers removed, so the same video gives the same answer every time.
 
-**Calibration via known reference geometry, not depth sensors.** Turning pixels into centimeters without a depth camera means anchoring the scene to something with a known real-world size. Using the bike's own wheelbase plus four pinned reference points solves that with a regular 2D camera, keeping hardware requirements down to "a phone or webcam."
+**Measure, don't assume, and check against data.** Clever-looking correction rules can quietly make things worse. I keep a shadow mode that compares models on real analyses, and I re-run thousands of stored, consented frames whenever the logic changes. One of those back-tests found that an old "self-correcting" rule was itself the source of wrong readings in some frames. It was removed, and that class of error disappeared.
 
-**Production usage feeds the model.** Every user-confirmed calibration is captured as labeled data in a standard YOLO dataset format, the active learning loop is built into the product surface itself rather than being a separate offline data collection effort.
+**Show the evidence to the user.** Measurements are drawn on the exact frame they come from. When an input is weak (for example, a calibration point is missing), the app says the value is an estimate instead of presenting it as fact.
 
-**One web core, synced to native.** The web app is the single source of truth; a build pipeline syncs it into a Capacitor-wrapped native Android shell, so there's one frontend codebase to maintain instead of two diverging ones.
+**Advice that matches how fitters work.** Recommendations are graded ("slightly high, optional small change" vs. "adjust and re-test"), depend on the bike type, and stay within what a side-on video can honestly show. Anything that needs a front view or pressure data is clearly marked as out of scope.
 
-## Sample fit report (illustrative)
+**Pay only for a finished analysis.** Credits are spent only when an analysis completes, on both the web (card payments) and Android (Google Play Billing), with all purchases verified on the server.
 
-```
-Rider profile: Road
+**One web core, shipped to native.** The web app is the single source of truth and is packaged into the Android app, so there is one front end to maintain instead of two.
 
-Saddle Height     : 73.8 cm     → IDEAL
-KOPS              : +1.2 cm     → Forward of spindle, within tolerance
-Handlebar Reach   : 68.2 cm
-Knee Angle        : 142°        → Ideal at pedal downstroke
-Hip Angle         : 43°         → Optimal
-
-Live telemetry: 250W · 92rpm · 34km/h · HR 164bpm
-```
+**Privacy by default.** Videos are deleted after analysis. Only frames from riders who opted in are kept, with faces blurred, and they are used to improve the analysis.
 
 ## Screenshots
 
 <p>
-  <img src="assets/dashboard_analysis.png" alt="Real-time biomechanical analysis dashboard" width="480" />
-  <img src="assets/calibration_mode.png" alt="Centimeter calibration mode" width="480" />
+  <img src="assets/dashboard_analysis.png" alt="Analysis dashboard" width="480" />
+  <img src="assets/calibration_mode.png" alt="Calibration mode" width="480" />
 </p>
 
 ## Stack
 
-**Vision:** YOLOv8-Pose (Ultralytics), MediaPipe, OpenCV
-**ML:** scikit-learn (ideal-angle prediction model)
-**Backend:** FastAPI (Python), SQLite
-**Hardware:** Raspberry Pi 5 + Hailo-8 NPU (26 TOPS)
-**Connectivity:** Web Bluetooth API (smart trainers, power meters)
-**Payments:** Stripe (session-based paywall)
-**Mobile:** Capacitor (native Android wrapper), published on Google Play
-**i18n:** 10 languages
+**Computer vision:** pose estimation models on an edge neural accelerator, OpenCV
+**Backend:** Python, FastAPI, SQLite, background job queue
+**Infrastructure:** self-hosted ARM server with an NPU, systemd, scheduled backups and monitoring
+**Front end:** vanilla JavaScript web app, 10 languages
+**Mobile:** Capacitor (Android), published on Google Play
+**Payments:** Stripe (web), Google Play Billing (Android), server-side verification
 
 ## What this repo is (and isn't)
 
-- **Is:** an architecture write-up and case study, meant to show how the system is designed and why.
-- **Isn't:** the source code or an install guide. BikeFit AI is closed, proprietary software, see the live product at [bike.coachonurai.com](https://bike.coachonurai.com).
+- **Is:** a case study showing how the product is designed and the reasoning behind it.
+- **Isn't:** the source code, an install guide, or a description of the measurement methods. BikeFit AI is proprietary. See the live product at [bikefit.coachonurai.com](https://bikefit.coachonurai.com).
 
-If you're an engineer or a hiring team and want to talk through any of the design decisions above in more depth, feel free to reach out via my GitHub profile.
+If you're an engineer or a hiring team and would like to talk through any of these decisions, feel free to reach out via my GitHub profile.
