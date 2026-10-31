@@ -4,7 +4,9 @@
 
 **Live product:** [bikefit.coachonurai.com](https://bikefit.coachonurai.com) · [Google Play](https://play.google.com/store/apps/details?id=com.trihonor.bikefitai)
 
-**This is a documentation-only repository.** BikeFit AI is a commercial, closed-source product with paying users on the web and Android. I design, build and run it end to end. This repo is a high-level case study for recruiters and engineers. It contains no source code, no implementation details, no credentials and no user data.
+**In production:** 1,250+ Android installs and 2,000+ completed analyses, with paying users on the web and Android.
+
+**This is a documentation-only repository.** BikeFit AI is a commercial, closed-source product. I design, build and run it end to end. This repo is a high-level case study for recruiters and engineers. It contains no source code, no implementation details, no credentials and no user data.
 
 ---
 
@@ -62,7 +64,13 @@ flowchart LR
 
 **Many strokes, not one frame.** A rider's position changes a little from one pedal stroke to the next, and any single frame can be blurred or blocked by the bike. The result is built from many strokes with outliers removed, so the same video gives the same answer every time.
 
-**Measure, don't assume, and check against data.** Clever-looking correction rules can quietly make things worse. I keep a shadow mode that compares models on real analyses, and I re-run thousands of stored, consented frames whenever the logic changes. One of those back-tests found that an old "self-correcting" rule was itself the source of wrong readings in some frames. It was removed, and that class of error disappeared.
+**Measure, don't assume, and check against data.** Clever-looking correction rules can quietly make things worse. I keep a shadow mode that compares models on real analyses, and before every release that touches the measurement I run the same real rider videos through the old and the new code and compare the results side by side. One of those back-tests found that an old "self-correcting" rule was itself the source of wrong readings in some frames. It was removed, and that class of error disappeared.
+
+**Accuracy is measured, not claimed.** Independent annotators marked the joints by hand on real analysis frames, without seeing the system's answer. The key knee angle agrees within about ±2°. The same check exposed a systematic bias: the pose model puts the hip about 10% of the thigh length too high (on the waistband instead of the hip joint), which made backs look a few degrees flatter than they are. It is now corrected with a calibrated offset. A hand-labelled gold set is also used to score both the riders' own calibration points and a model trained on consented frames.
+
+**Advice grounded in the literature.** Every range was checked against peer-reviewed work (citations verified on PubMed) and professional fit protocols, for road, triathlon/TT and MTB separately. Advice uses three zones (ideal, borderline, change something), because a value one or two degrees past a limit is inside the measurement noise of a side-on video and should not flip a recommendation. Measurements that video cannot capture reliably (for example the ankle) are shown as observations, not advice.
+
+**Fast enough on phone video.** Typical phone footage (1080p, 60 fps, HEVC) used to take about eight minutes. Profiling showed the time went into reading the same section of video twice, not into the AI models; restructuring the passes cut analysis time by roughly 40% without changing results beyond normal stroke-to-stroke variation.
 
 **Show the evidence to the user.** Measurements are drawn on the exact frame they come from. When an input is weak (for example, a calibration point is missing), the app says the value is an estimate instead of presenting it as fact.
 
@@ -72,11 +80,14 @@ flowchart LR
 
 **One web core, shipped to native.** The web app is the single source of truth and is packaged into the Android app, so there is one front end to maintain instead of two.
 
-**Privacy by default.** Videos are deleted after analysis. Only frames from riders who opted in are kept, with faces blurred, and they are used to improve the analysis.
+**Privacy by default.** Videos are deleted after analysis. Only frames from riders who opted in are kept, with the head and face blurred, and they are used to improve the analysis. Riders can delete their account and data themselves, and the privacy policy and terms are available in all 10 languages.
+
+**Tested like a product people pay for.** 120+ automated backend tests (payments, webhooks, consent, fit rules, the analysis pipeline) and browser tests of the critical flows run before every deploy.
 
 ## Screenshots
 
 <p>
+  <img src="assets/measured_frame.jpg" alt="Measurements drawn on the exact frame they come from" width="480" />
   <img src="assets/dashboard_analysis.png" alt="Analysis dashboard" width="480" />
   <img src="assets/calibration_mode.png" alt="Calibration mode" width="480" />
 </p>
